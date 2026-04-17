@@ -1,0 +1,303 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body, html {
+  height: 100%;
+  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #1a1a1a;
+  overflow: hidden; /* We handle panning/zooming via JS now */
+}
+
+/* Base Viewport with dynamic grid */
+.canvas-viewport {
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  overflow: hidden;
+  background-color: #fcfcfc;
+  background-image: radial-gradient(#d5d5d5 1.5px, transparent 1.5px);
+  /* Default scale, overwritten by JS */
+  background-size: 20px 20px;
+  background-position: 0 0;
+  cursor: grab;
+  z-index: 1;
+}
+
+.canvas-viewport.dragging {
+  cursor: grabbing;
+}
+
+/* Infinite container where bubbles actually live */
+.canvas-container {
+  position: absolute;
+  top: 0; left: 0;
+  width: 0; height: 0;
+  /* Transform Origin set properly for JS Matrix scaling */
+  transform-origin: 0 0;
+}
+
+.header {
+  padding: 30px 40px 10px 40px;
+  background: linear-gradient(to bottom, rgba(252,252,252,1) 50%, rgba(252,252,252,0));
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  z-index: 100;
+  pointer-events: none;
+}
+
+.header h1 {
+  font-size: 2rem;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+
+.header p {
+  color: #888;
+  font-weight: 300;
+  font-size: 1rem;
+}
+
+.message-sender {
+  font-size: 0.8rem;
+  font-weight: 700;
+  margin-bottom: 6px;
+  opacity: 0.8;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+  letter-spacing: 0.5px;
+}
+
+.canvas-message {
+  position: absolute; 
+  padding: 16px 24px;
+  border-radius: 20px;
+  border-bottom-left-radius: 4px;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.1), 0 1px 3px rgba(0,0,0,0.05);
+  font-size: 1.1rem;
+  line-height: 1.5;
+  color: #ffffff;
+  max-width: 350px;
+  min-width: 150px;
+  word-wrap: break-word;
+  animation: popIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+  will-change: transform, left, top;
+  user-select: none;
+}
+
+.canvas-message.draggable {
+  cursor: grab;
+  border: 2px solid rgba(255,255,255,0.4);
+}
+
+.canvas-message.draggable:active {
+  cursor: grabbing;
+  transform: scale(1.05); 
+  z-index: 50 !important;
+  box-shadow: 0 15px 40px rgba(0,0,0,0.25);
+  transition: transform 0.1s;
+}
+
+.canvas-message.not-dragging {
+  /* Smooth transitions for messages moved by other clients */
+  transition: top 0.3s ease-out, left 0.3s ease-out, transform 0.2s ease-out;
+}
+
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.7) translateY(20px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.4s ease;
+}
+
+.overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.login-modal {
+  background: white;
+  padding: 40px;
+  border-radius: 24px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.08), 0 2px 10px rgba(0,0,0,0.04);
+  text-align: center;
+  max-width: 400px;
+  width: 90%;
+  border: 1px solid rgba(0,0,0,0.05);
+  transform: translateY(0);
+  transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+.overlay.hidden .login-modal {
+  transform: translateY(20px) scale(0.95);
+}
+
+.login-modal h2 {
+  margin-bottom: 12px;
+  font-weight: 600;
+  font-size: 1.8rem;
+}
+
+.login-modal p {
+  color: #666;
+  margin-bottom: 30px;
+  font-size: 1.05rem;
+}
+
+.google-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 24px;
+  border-radius: 12px;
+  font-size: 1.1rem;
+  font-weight: 500;
+  font-family: inherit;
+  background: #fff;
+  color: #3c4043;
+  border: 1px solid #dadce0;
+  cursor: pointer;
+  transition: background 0.2s, box-shadow 0.2s, transform 0.1s;
+  box-shadow: 0 1px 2px 0 rgba(60,64,67,0.3), 0 1px 3px 1px rgba(60,64,67,0.15);
+}
+
+.google-btn:hover {
+  background: #f8f9fa;
+  box-shadow: 0 1px 3px 0 rgba(60,64,67,0.3), 0 4px 8px 3px rgba(60,64,67,0.15);
+}
+
+.google-btn:active {
+  background: #e8eaed;
+  transform: scale(0.98);
+}
+
+.input-container {
+  padding: 20px 40px 40px 40px;
+  background: linear-gradient(to top, rgba(252,252,252,1) 50%, rgba(252,252,252,0));
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  pointer-events: none;
+  z-index: 100;
+}
+
+#message-form {
+  pointer-events: auto;
+  display: flex;
+  gap: 8px;
+  max-width: 700px;
+  margin: 0 auto;
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  padding: 8px;
+  border-radius: 40px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.08), 0 2px 10px rgba(0,0,0,0.04);
+  border: 1px solid rgba(0,0,0,0.05);
+}
+
+#message-input {
+  flex: 1;
+  border: none;
+  outline: none;
+  padding: 12px 24px;
+  font-size: 1.05rem;
+  font-family: inherit;
+  border-radius: 40px;
+  background: transparent;
+  color: #111;
+}
+
+#message-input::placeholder {
+  color: #aaa;
+  font-weight: 300;
+}
+
+#message-form button {
+  background-color: #111;
+  color: white;
+  border: none;
+  padding: 0 20px;
+  border-radius: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+#message-form button:hover {
+  background-color: #333;
+  transform: scale(1.02);
+}
+
+#message-form button:active {
+  transform: scale(0.95);
+}
+
+.admin-btn {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  background-color: #D32F2F;
+  color: white;
+  border: none;
+  padding: 12px 24px;
+  border-radius: 30px;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 15px rgba(211, 47, 47, 0.4);
+  z-index: 200;
+  transition: all 0.2s;
+  pointer-events: auto;
+}
+
+.admin-btn:hover {
+  background-color: #B71C1C;
+  transform: translateY(-2px);
+}
+
+.admin-btn:active {
+  transform: translateY(0) scale(0.95);
+}
+
+.admin-btn.hidden {
+  display: none;
+}
+
+.particle {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 50%;
+  z-index: 9999;
+}
+
+@keyframes shake-element {
+  0% { transform: translateX(0) scale(1); }
+  20% { transform: translateX(-10px) translateY(-5px) rotate(-2deg); }
+  40% { transform: translateX(10px) translateY(5px) rotate(2deg); }
+  60% { transform: translateX(-10px) translateY(-5px) rotate(-2deg); }
+  80% { transform: translateX(10px) translateY(5px) rotate(2deg); }
+  100% { transform: translateX(0) scale(1); }
+}
+
+.shake-animation {
+  animation: shake-element 0.5s cubic-bezier(.36,.07,.19,.97) both !important;
+}
