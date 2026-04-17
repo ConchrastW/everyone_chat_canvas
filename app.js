@@ -191,17 +191,6 @@ form.addEventListener("submit", async (e) => {
 
   isSubmitting = true;
   
-  const lowerText = text.toLowerCase();
-  if (lowerText.includes('bomb') || lowerText.includes('explode') || lowerText.includes('boom')) {
-    form.classList.add('shake-animation');
-    setTimeout(() => form.classList.remove('shake-animation'), 500);
-    
-    const rect = form.getBoundingClientRect();
-    const centerX = rect.left + rect.width / 2;
-    const centerY = rect.top + rect.height / 2;
-    createExplosion(centerX, centerY);
-  }
-  
   const pos = getCurrentViewCenterPosition();
 
   try {
