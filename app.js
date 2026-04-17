@@ -192,7 +192,7 @@ form.addEventListener("submit", async (e) => {
   isSubmitting = true;
   
   const lowerText = text.toLowerCase();
-  if (lowerText.includes('bomb') || lowerText.includes('explode')) {
+  if (lowerText.includes('bomb') || lowerText.includes('explode') || lowerText.includes('boom')) {
     form.classList.add('shake-animation');
     setTimeout(() => form.classList.remove('shake-animation'), 500);
     
@@ -287,7 +287,7 @@ function createMessageElement(key, data) {
   canvasContainer.appendChild(messageElement);
 
   const lowerText = (data.text || "").toLowerCase();
-  if (lowerText.includes('bomb') || lowerText.includes('explode')) {
+  if (lowerText.includes('bomb') || lowerText.includes('explode') || lowerText.includes('boom')) {
     setTimeout(() => {
       if (document.body.contains(messageElement)) {
         messageElement.classList.add('shake-animation');
