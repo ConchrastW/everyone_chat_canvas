@@ -295,7 +295,10 @@ function createMessageElement(key, data) {
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
         createExplosion(cx, cy);
-        setTimeout(() => messageElement.classList.remove('shake-animation'), 500);
+        setTimeout(() => {
+          messageElement.classList.remove('shake-animation');
+          messageElement.style.animation = 'none';
+        }, 500);
       }
     }, 400); // 400ms corresponds to the popIn animation length
   }
