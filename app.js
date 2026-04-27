@@ -226,7 +226,13 @@ onChildAdded(messagesRef, (snapshot) => {
 onChildRemoved(messagesRef, (snapshot) => {
   const key = snapshot.key;
   if (messageElements[key]) {
-    messageElements[key].remove();
+    const el = messageElements[key];
+    el.style.transition = 'transform 0.2s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.2s';
+    el.style.transform = 'scale(0)';
+    el.style.opacity = '0';
+    setTimeout(() => {
+      el.remove();
+    }, 200);
     delete messageElements[key];
   }
 });
@@ -284,6 +290,26 @@ function createMessageElement(key, data) {
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
         createExplosion(cx, cy);
+        
+        // Destruction logic in world coordinates
+        const isRecent = Date.now() - (data.timestamp || 0) < 10000;
+        if (isRecent && userId && data.userId === userId) {
+          const myX = parseFloat(messageElement.style.left) || 0;
+          const myY = parseFloat(messageElement.style.top) || 0;
+          const explosionRadius = 350; // Radius in canvas pixels
+          
+          Object.entries(messageElements).forEach(([otherKey, otherElement]) => {
+            if (otherKey !== key) {
+              const ox = parseFloat(otherElement.style.left) || 0;
+              const oy = parseFloat(otherElement.style.top) || 0;
+              const dist = Math.sqrt((myX - ox) ** 2 + (myY - oy) ** 2);
+              if (dist <= explosionRadius) {
+                remove(ref(db, `canvas_messages/${otherKey}`)).catch(err => console.error("Error destroying message", err));
+              }
+            }
+          });
+        }
+
         setTimeout(() => {
           messageElement.classList.remove('shake-animation');
           messageElement.style.animation = 'none';
