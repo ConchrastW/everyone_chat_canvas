@@ -258,7 +258,7 @@ async function submitMessage(rawText, pos, isClone = false, imageUrl = null) {
     const lowerText = (rawText || "").toLowerCase();
     let firstTrigger = null;
     let firstTriggerIndex = Infinity;
-    const triggerKeywords = ["send", "boom", "smoke", "physics"];
+    const triggerKeywords = ["send", "boom", "smoke"];
     for (const keyword of triggerKeywords) {
       const idx = lowerText.indexOf(keyword);
       if (idx !== -1 && idx < firstTriggerIndex) {
@@ -291,11 +291,8 @@ async function submitMessage(rawText, pos, isClone = false, imageUrl = null) {
 
     const mainMsgRef = await push(messagesRef, messageData);
     const mainKey = mainMsgRef.key;
-
-    if (firstTrigger === "physics") {
-      startPhysicsLoop(mainKey);
-    }
     
+
 
   } catch (error) {
     console.error("Error writing to Firebase:", error);
@@ -1040,119 +1037,6 @@ function updateSmokeAccess(el, key, data) {
   }
 }
 
-function startPhysicsLoop(key) {
-  let vx = (Math.random() - 0.5) * 15;
-  let vy = -15; 
-  const gravity = 1.2;
-  const bounce = 0.5;
-  const friction = 0.98;
-
-  const interval = setInterval(() => {
-    const el = messageElements[key];
-    if (!el || !document.body.contains(el)) {
-      clearInterval(interval);
-      return;
-    }
-
-    vy += gravity;
-    vx *= friction;
-    vy *= friction;
-
-    const currentX = parseFloat(el.style.left) || 0;
-    const currentY = parseFloat(el.style.top) || 0;
-    
-    let newX = currentX + vx;
-    let newY = currentY + vy;
-    
-    const myWidth = el.offsetWidth || 150;
-    const myHeight = el.offsetHeight || 50;
-
-    let hitSomething = false;
-
-    for (const [otherKey, otherElement] of Object.entries(messageElements)) {
-      if (otherElement !== el) {
-        if (otherElement.dataset.isBullet) continue;
-
-        const otherX = parseFloat(otherElement.style.left) || 0;
-        const otherY = parseFloat(otherElement.style.top) || 0;
-        const width = otherElement.offsetWidth || 150;
-        const height = otherElement.offsetHeight || 50;
-        
-        const otherLeft = otherX - width / 2;
-        const otherRight = otherX + width / 2;
-        const otherTop = otherY - height / 2;
-        const otherBottom = otherY + height / 2;
-        
-        const myLeft = newX - myWidth / 2;
-        const myRight = newX + myWidth / 2;
-        const myTop = newY - myHeight / 2;
-        const myBottom = newY + myHeight / 2;
-
-        if (!(myRight < otherLeft || 
-              myLeft > otherRight || 
-              myBottom < otherTop || 
-              myTop > otherBottom)) {
-          
-          hitSomething = true;
-          const prevRight = currentX + myWidth / 2;
-          const prevLeft = currentX - myWidth / 2;
-          const prevBottom = currentY + myHeight / 2;
-          const prevTop = currentY - myHeight / 2;
-          
-          let hitX = false;
-          let hitY = false;
-
-          if (prevRight <= otherLeft || prevLeft >= otherRight) hitX = true;
-          if (prevBottom <= otherTop || prevTop >= otherBottom) hitY = true;
-          
-          if (!hitX && !hitY) {
-            const dx = newX - otherX;
-            const dy = newY - otherY;
-            if (Math.abs(dx) / width > Math.abs(dy) / height) hitX = true;
-            else hitY = true;
-          }
-
-          if (hitX) {
-            vx = -vx * bounce; 
-            if (newX > otherX) newX = otherRight + myWidth / 2 + 1;
-            else newX = otherLeft - myWidth / 2 - 1;
-          }
-          if (hitY) {
-            vy = -vy * bounce; 
-            if (newY > otherY) newY = otherBottom + myHeight / 2 + 1;
-            else newY = otherTop - myHeight / 2 - 1;
-            
-            // Extra friction on the floor
-            if (newY < otherY) {
-              vx *= 0.8;
-            }
-          }
-        }
-      }
-    }
-
-    if (newY > 20000) {
-      clearInterval(interval);
-      remove(ref(db, `canvas_messages/${key}`)).catch(() => {});
-      return;
-    }
-
-    // Sleep if resting
-    if (hitSomething && Math.abs(vx) < 1.0 && Math.abs(vy) < 2.0) {
-      clearInterval(interval);
-      el.classList.remove('physics-active');
-    }
-
-    el.style.left = `${newX}px`;
-    el.style.top = `${newY}px`;
-
-    if (Math.abs(currentX - newX) > 0.5 || Math.abs(currentY - newY) > 0.5) {
-       update(ref(db, `canvas_messages/${key}`), { x: newX, y: newY }).catch(() => {});
-    }
-
-  }, 30);
-}
-
 // Minecraft-style Broadcasting System
 function appendToHistory(text, timestamp, isSystem = false) {
   globalHistory.push({ text, timestamp, isSystem });
@@ -1195,7 +1079,7 @@ function computeBroadcastText(messageKey, data) {
   const lowerText = (data.text || "").toLowerCase();
   let firstTrigger = null;
   let firstTriggerIndex = Infinity;
-  const triggerKeywords = ["send", "boom", "smoke", "physics"];
+  const triggerKeywords = ["send", "boom", "smoke"];
   for (const keyword of triggerKeywords) {
     const idx = lowerText.indexOf(keyword);
     if (idx !== -1 && idx < firstTriggerIndex) {
@@ -1215,8 +1099,6 @@ function computeBroadcastText(messageKey, data) {
     broadcastText = `${name} caused an explosion!`;
   } else if (firstTrigger === "smoke") {
     broadcastText = `${name} deployed a smoke screen!`;
-  } else if (firstTrigger === "physics") {
-    broadcastText = `${name} enabled physics!`;
   } else {
     let msg = data.text;
     if (msg.length > 30) msg = msg.substring(0, 30) + "...";
