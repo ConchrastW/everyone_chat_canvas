@@ -1,6 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-app.js";
 import { getDatabase, ref, push, update, remove, onChildAdded, onChildChanged, onChildRemoved } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-database.js";
 import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-auth.js";
+import { getStorage, ref as storageRef, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.9.0/firebase-storage.js";
 
 // Firebase configuration
 const firebaseConfig = {
@@ -18,6 +19,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
 const auth = getAuth(app);
+const storage = getStorage(app);
 const provider = new GoogleAuthProvider();
 const messagesRef = ref(db, "canvas_messages");
 
@@ -25,28 +27,40 @@ const messagesRef = ref(db, "canvas_messages");
 
 // DOM Elements
 const loginOverlay = document.getElementById("login-overlay");
+const customizeOverlay = document.getElementById("customize-overlay");
+const colorFillInput = document.getElementById("color-fill");
+const colorOutlineInput = document.getElementById("color-outline");
+const colorTextInput = document.getElementById("color-text");
+const bubblePreview = document.getElementById("bubble-preview");
+const previewSender = document.getElementById("preview-sender");
+const joinCanvasBtn = document.getElementById("join-canvas-btn");
 const googleSignInBtn = document.getElementById("google-signin-btn");
 const form = document.getElementById("message-form");
 const input = document.getElementById("message-input");
+const imageInput = document.getElementById("image-input");
+const attachBtnLabel = document.getElementById("attach-btn-label");
 const canvasViewport = document.getElementById("canvas-viewport");
 const canvasContainer = document.getElementById("canvas-container");
-const adminClearBtn = document.getElementById("admin-clear-btn");
+const userBadge = document.getElementById("user-badge");
+const userBadgeBubble = document.getElementById("user-badge-bubble");
+const userBadgeName = document.getElementById("user-badge-name");
 
 // State
 let isSubmitting = false;
 let userName = "Anonymous";
-let userColor = "#111";
+let userColor = "#4285F4";
+let userTextColor = "#ffffff";
+let userOutlineColor = "transparent";
 let userId = null;
+const pageLoadTime = Date.now();
 const messageElements = {};
+const globalHistory = [];
 
 // --- Camera System (Infinite Canvas) ---
 let camera = { x: 0, y: 0, z: 1 };
 
 function updateCameraTransform() {
   canvasContainer.style.transform = `translate(${camera.x}px, ${camera.y}px) scale(${camera.z})`;
-  // Update background grid to match camera offset and zoom
-  canvasViewport.style.backgroundPosition = `${camera.x}px ${camera.y}px`;
-  canvasViewport.style.backgroundSize = `${20 * camera.z}px ${20 * camera.z}px`;
 }
 
 // 1. Zoom Logic
@@ -107,26 +121,66 @@ window.addEventListener('mouseup', () => {
 });
 // --- End Camera System ---
 
-function generateUniqueVibrantColor() {
-  // Math.random ensures 360 * 30 * 20 = 216,000 strictly unique color combination strings.
-  const hue = Math.floor(Math.random() * 360);
-  const sat = 70 + Math.floor(Math.random() * 30);   // 70% to 100% saturation
-  const light = 35 + Math.floor(Math.random() * 20); // 35% to 55% lightness (deep but vibrant)
-  return `hsl(${hue}, ${sat}%, ${light}%)`;
+function updatePreview() {
+  bubblePreview.style.backgroundColor = colorFillInput.value;
+  bubblePreview.style.color = colorTextInput.value;
+  bubblePreview.style.border = colorOutlineInput.value !== "transparent" && colorOutlineInput.value !== "#00000000" ? `3px solid ${colorOutlineInput.value}` : "none";
 }
 
-function getPersistentRandomColor(uid) {
-  const savedKey = `canvas_color_${uid}`;
-  const savedColor = localStorage.getItem(savedKey);
+colorFillInput.addEventListener("input", updatePreview);
+colorTextInput.addEventListener("input", updatePreview);
+colorOutlineInput.addEventListener("input", updatePreview);
+
+joinCanvasBtn.addEventListener("click", () => {
+  userColor = colorFillInput.value;
+  userTextColor = colorTextInput.value;
+  userOutlineColor = colorOutlineInput.value;
   
-  if (savedColor) {
-    return savedColor;
+  localStorage.setItem(`color_fill_${userId}`, userColor);
+  localStorage.setItem(`color_text_${userId}`, userTextColor);
+  localStorage.setItem(`color_outline_${userId}`, userOutlineColor);
+  
+  const updates = {};
+  for (const [key, el] of Object.entries(messageElements)) {
+    if (el.dataset.uid === userId) {
+      updates[`${key}/color`] = userColor;
+      updates[`${key}/textColor`] = userTextColor;
+      updates[`${key}/outlineColor`] = userOutlineColor;
+    }
+  }
+  if (Object.keys(updates).length > 0) {
+    update(messagesRef, updates).catch(err => console.error(err));
   }
   
-  const newColor = generateUniqueVibrantColor();
-  localStorage.setItem(savedKey, newColor);
-  return newColor;
-}
+  customizeOverlay.classList.add("hidden");
+  hitMarker.classList.remove("hidden");
+  
+  // Update and show user badge
+  userBadgeName.textContent = userName;
+  userBadgeBubble.style.backgroundColor = userColor;
+  userBadgeBubble.style.color = userTextColor;
+  if (userOutlineColor !== "transparent" && userOutlineColor !== "#00000000") {
+    userBadgeBubble.style.border = `3px solid ${userOutlineColor}`;
+  } else {
+    userBadgeBubble.style.border = "none";
+  }
+  userBadge.classList.remove("hidden");
+  
+  input.focus();
+  updateCameraTransform();
+  
+  // Re-evaluate dragging for messages already loaded
+  Object.keys(messageElements).forEach(key => {
+     const el = messageElements[key];
+     const dataUserId = el.dataset.uid;
+     if (dataUserId === userId) {
+       if (!el.classList.contains("draggable")) {
+         el.classList.add("draggable");
+         makeDraggable(el, key);
+       }
+     }
+  });
+});
 
 // Handle login
 googleSignInBtn.addEventListener("click", async () => {
@@ -142,29 +196,36 @@ onAuthStateChanged(auth, (user) => {
   if (user) {
     userName = user.displayName || "Anonymous";
     userId = user.uid;
-    userColor = getPersistentRandomColor(user.uid);
-    loginOverlay.classList.add("hidden");
-    input.focus();
-    updateCameraTransform();
     
-    // Admin check
-    if (user.email === "charleswang1068@gmail.com") {
-      adminClearBtn.classList.remove("hidden");
-    } else {
-      adminClearBtn.classList.add("hidden");
+    const savedFill = localStorage.getItem(`color_fill_${userId}`);
+    const savedText = localStorage.getItem(`color_text_${userId}`);
+    const savedOutline = localStorage.getItem(`color_outline_${userId}`);
+    
+    if (savedFill) colorFillInput.value = savedFill;
+    if (savedText) colorTextInput.value = savedText;
+    if (savedOutline) colorOutlineInput.value = savedOutline;
+    
+    previewSender.textContent = userName;
+    updatePreview();
+    
+    // Apply draggable & delete to previously loaded messages
+    for (const [key, el] of Object.entries(messageElements)) {
+      if (el.dataset.uid === userId) {
+        if (!el.classList.contains("draggable")) {
+          el.classList.add("draggable");
+          makeDraggable(el, key);
+        }
+        addDeleteButton(el, key);
+      }
     }
-    
-    // Re-evaluate dragging for messages already loaded
-    Object.keys(messageElements).forEach(key => {
-       const el = messageElements[key];
-       const dataUserId = el.dataset.uid;
-       if (dataUserId === userId) {
-         el.classList.add("draggable");
-         makeDraggable(el, key);
-       }
-    });
+
+    loginOverlay.classList.add("hidden");
+    customizeOverlay.classList.remove("hidden");
+    hitMarker.classList.add("hidden");
   } else {
     loginOverlay.classList.remove("hidden");
+    customizeOverlay.classList.add("hidden");
+    hitMarker.classList.add("hidden");
   }
 });
 
@@ -175,40 +236,16 @@ const hitMarker = document.createElement('div');
 hitMarker.className = 'hit-marker hidden';
 document.body.appendChild(hitMarker);
 
+// Keep tracking mouse for other potential uses, but don't move the hitMarker
 window.addEventListener('mousemove', (e) => {
   currentMouseX = e.clientX;
   currentMouseY = e.clientY;
-  
-  // Hide if hovering over input interface, overlay, or header
-  if (e.target.closest('.input-container') || e.target.closest('.header') || e.target.closest('.overlay') || e.target.closest('.admin-btn')) {
-    hitMarker.classList.add('hidden');
-  } else {
-    hitMarker.classList.remove('hidden');
-    hitMarker.style.left = `${currentMouseX}px`;
-    hitMarker.style.top = `${currentMouseY}px`;
-  }
 });
 
-document.addEventListener('mouseleave', () => {
-  currentMouseX = null;
-  currentMouseY = null;
-  hitMarker.classList.add('hidden');
-});
-
-document.addEventListener('mouseenter', (e) => {
-  currentMouseX = e.clientX;
-  currentMouseY = e.clientY;
-});
-
-// Helper to get spawn position (mouse position or center fallback)
+// Helper to get spawn position (always center of the screen)
 function getSpawnPosition() {
-  let cx = window.innerWidth / 2;
-  let cy = window.innerHeight / 2;
-  
-  if (currentMouseX !== null && currentMouseY !== null) {
-    cx = currentMouseX;
-    cy = currentMouseY;
-  }
+  const cx = window.innerWidth / 2;
+  const cy = window.innerHeight / 2;
   
   const worldX = (cx - camera.x) / camera.z;
   const worldY = (cy - camera.y) / camera.z;
@@ -216,22 +253,12 @@ function getSpawnPosition() {
   return { x: worldX, y: worldY };
 }
 
-async function submitMessage(rawText, pos, isClone = false) {
+async function submitMessage(rawText, pos, isClone = false, imageUrl = null) {
   try {
-    await push(messagesRef, {
-      text: rawText,
-      sender: userName,
-      color: userColor,
-      userId: userId,
-      x: pos.x,
-      y: pos.y,
-      timestamp: Date.now()
-    });
-    
-    const lowerText = rawText.toLowerCase();
+    const lowerText = (rawText || "").toLowerCase();
     let firstTrigger = null;
     let firstTriggerIndex = Infinity;
-    const triggerKeywords = ["cast", "boom", "smoke"];
+    const triggerKeywords = ["send", "boom", "smoke", "physics"];
     for (const keyword of triggerKeywords) {
       const idx = lowerText.indexOf(keyword);
       if (idx !== -1 && idx < firstTriggerIndex) {
@@ -239,37 +266,34 @@ async function submitMessage(rawText, pos, isClone = false) {
         firstTrigger = keyword;
       }
     }
-    
-    // Feature: Cast
-    if (firstTrigger === "cast") {
-      let dir = "right"; // default direction
-      const directions = ["up", "down", "left", "right"];
-      const words = rawText.toLowerCase().match(/\b\w+\b/g) || [];
-      for (const w of words) {
-        if (directions.includes(w)) {
-          dir = w;
-          break; // pick the first directional word
-        }
+
+    const messageData = {
+      text: rawText || "",
+      imageUrl: imageUrl,
+      sender: userName,
+      color: userColor,
+      textColor: userTextColor,
+      outlineColor: userOutlineColor,
+      userId: userId,
+      x: pos.x,
+      y: pos.y,
+      timestamp: Date.now()
+    };
+
+    if (firstTrigger === "send") {
+      let angle = 0;
+      const angleMatch = rawText.match(/(-?\d+(?:\.\d+)?)\s*degrees?/i);
+      if (angleMatch) {
+        angle = parseFloat(angleMatch[1]);
       }
+      messageData.sendAngle = angle;
+    }
 
-      let spawnX = pos.x;
-      let spawnY = pos.y;
-      if (dir === "right") spawnX += 100;
-      else if (dir === "left") spawnX -= 100;
-      else if (dir === "up") spawnY -= 100;
-      else if (dir === "down") spawnY += 100;
+    const mainMsgRef = await push(messagesRef, messageData);
+    const mainKey = mainMsgRef.key;
 
-      const bulletRef = await push(messagesRef, {
-        text: "x",
-        isBullet: true,
-        sender: userName,
-        color: userColor,
-        userId: userId,
-        x: spawnX,
-        y: spawnY,
-        timestamp: Date.now()
-      });
-      startBulletLoop(bulletRef.key, dir);
+    if (firstTrigger === "physics") {
+      startPhysicsLoop(mainKey);
     }
     
 
@@ -279,31 +303,99 @@ async function submitMessage(rawText, pos, isClone = false) {
 }
 
 // Handle sending messages
+imageInput.addEventListener("change", () => {
+  if (imageInput.files.length > 0) attachBtnLabel.style.color = "#4285F4";
+  else attachBtnLabel.style.color = "#888";
+});
+
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   
   const rawText = input.value.trim();
-  if (!rawText || isSubmitting) return;
+  const hasFile = imageInput.files.length > 0;
+  
+  if ((!rawText && !hasFile) || isSubmitting) return;
+
+  if (rawText.toLowerCase() === "clear") {
+    const updates = {};
+    for (const [key, el] of Object.entries(messageElements)) {
+      if (el.dataset.uid === userId) {
+        updates[key] = null;
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      update(messagesRef, updates).catch(err => console.error("Error clearing messages:", err));
+    }
+    
+    push(ref(db, 'canvas_broadcasts'), {
+      text: `${userName} wiped all their messages from the board!`,
+      timestamp: Date.now()
+    }).catch(() => {});
+    
+    input.value = "";
+    return;
+  }
 
   isSubmitting = true;
   const pos = getSpawnPosition();
   
-  await submitMessage(rawText, pos, false);
+  let imageUrl = null;
+  if (hasFile) {
+    const file = imageInput.files[0];
+    
+    if (file.size > 5 * 1024 * 1024) {
+      alert("Image is too large! Please choose a file under 5MB.");
+      isSubmitting = false;
+      return;
+    }
+
+    try {
+      imageUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = (e) => reject(e);
+        reader.readAsDataURL(file);
+      });
+    } catch (err) {
+      console.error("File read error", err);
+      alert("Failed to read image.");
+      isSubmitting = false;
+      return;
+    }
+  }
+  
+  await submitMessage(rawText, pos, false, imageUrl);
   
   input.value = "";
+  imageInput.value = "";
+  attachBtnLabel.style.color = "#888";
   isSubmitting = false;
 });
 
-// Admin Clear Logic
-adminClearBtn.addEventListener("click", () => {
-  if (confirm("Are you sure you want to clear the entire canvas? This cannot be undone.")) {
-    remove(messagesRef).catch(err => console.error("Error clearing board", err));
-  }
-});
 
 // DB Listeners
 onChildAdded(messagesRef, (snapshot) => {
-  createMessageElement(snapshot.key, snapshot.val());
+  const data = snapshot.val();
+  const key = snapshot.key;
+  createMessageElement(key, data);
+  
+  if (!data.isBullet) {
+    const text = computeBroadcastText(key, data);
+    if (text) {
+      appendToHistory(text, data.timestamp || Date.now(), false);
+      if (data.timestamp && data.timestamp > pageLoadTime) {
+        addBroadcastElement(text);
+      }
+    }
+  }
+});
+
+onChildAdded(ref(db, 'canvas_broadcasts'), (snapshot) => {
+  const data = snapshot.val();
+  appendToHistory(data.text, data.timestamp || Date.now(), true);
+  if (data.timestamp && data.timestamp > pageLoadTime) {
+    addBroadcastElement(data.text);
+  }
 });
 
 onChildRemoved(messagesRef, (snapshot) => {
@@ -342,6 +434,17 @@ onChildChanged(messagesRef, (snapshot) => {
       el.style.left = `${data.x}px`;
       el.style.top = `${data.y}px`;
     }
+    
+    el.style.backgroundColor = data.color || "#111";
+    if (data.textColor) {
+      el.style.color = data.textColor;
+    }
+    if (data.outlineColor && data.outlineColor !== "transparent" && data.outlineColor !== "#00000000") {
+      el.style.border = `3px solid ${data.outlineColor}`;
+    } else {
+      el.style.border = "none";
+    }
+
     updateSmokeAccess(el, key, data);
   }
 });
@@ -354,6 +457,13 @@ function createMessageElement(key, data) {
   messageElement.style.left = `${data.x || 0}px`;
   messageElement.style.top = `${data.y || 0}px`;
   messageElement.style.backgroundColor = data.color || "#111";
+  
+  if (data.textColor) {
+    messageElement.style.color = data.textColor;
+  }
+  if (data.outlineColor && data.outlineColor !== "transparent" && data.outlineColor !== "#00000000") {
+    messageElement.style.border = `3px solid ${data.outlineColor}`;
+  }
 
   const senderElement = document.createElement("div");
   senderElement.classList.add("message-sender");
@@ -364,18 +474,33 @@ function createMessageElement(key, data) {
   textElement.textContent = data.text;
   
   messageElement.appendChild(senderElement);
-  messageElement.appendChild(textElement);
+  if (data.text) {
+    messageElement.appendChild(textElement);
+  }
+  if (data.imageUrl) {
+    const imgEl = document.createElement("img");
+    imgEl.src = data.imageUrl;
+    imgEl.className = "attached-image-preview";
+    messageElement.appendChild(imgEl);
+  }
   
   messageElement.dataset.uid = data.userId;
+  if (data.parentId) {
+    messageElement.dataset.parentId = data.parentId;
+  }
   if (data.isBullet) {
     messageElement.dataset.isBullet = "true";
     messageElement.classList.add("bullet-bubble");
+  }
+  if (data.sendAngle !== undefined) {
+    messageElement.dataset.sendAngle = data.sendAngle;
   }
   messageElements[key] = messageElement;
 
   if (userId && data.userId === userId) {
     messageElement.classList.add("draggable");
     makeDraggable(messageElement, key);
+    addDeleteButton(messageElement, key);
   }
 
   canvasContainer.appendChild(messageElement);
@@ -388,7 +513,7 @@ function createMessageElement(key, data) {
   const lowerText = (data.text || "").toLowerCase();
   let firstTrigger = null;
   let firstTriggerIndex = Infinity;
-  const triggerKeywords = ["cast", "boom", "smoke"];
+  const triggerKeywords = ["send", "boom", "smoke"];
   for (const keyword of triggerKeywords) {
     const idx = lowerText.indexOf(keyword);
     if (idx !== -1 && idx < firstTriggerIndex) {
@@ -423,17 +548,64 @@ function createMessageElement(key, data) {
         const cy = parseFloat(messageElement.style.top) || 0;
         createExplosion(cx, cy);
         
-        // Destruction logic in world coordinates
+        // Push logic in world coordinates
         if (userId && data.userId === userId) {
           const myX = parseFloat(messageElement.style.left) || 0;
           const myY = parseFloat(messageElement.style.top) || 0;
-          const explosionRadius = 350; // Radius in canvas pixels
+          
+          // The visual core of the fireball is smaller than the 525px bounding box.
+          // The radial gradient fades to dark grey at 85% and transparent at 100%.
+          // We use 75% of the base radius to match the intense fire part.
+          const explosionRadius = (525 / 2) * 0.75; 
           
           Object.entries(messageElements).forEach(([otherKey, otherElement]) => {
             if (otherKey !== key) {
-              const otherUid = otherElement.dataset.uid;
-              if (otherUid !== userId) {
-                remove(ref(db, `canvas_messages/${otherKey}`)).catch(err => console.error("Error destroying message", err));
+              const otherX = parseFloat(otherElement.style.left) || 0;
+              const otherY = parseFloat(otherElement.style.top) || 0;
+              
+              // Speech bubbles are centered on otherX, otherY via translate(-50%, -50%)
+              const width = otherElement.offsetWidth;
+              const height = otherElement.offsetHeight;
+              const left = otherX - width / 2;
+              const right = otherX + width / 2;
+              const top = otherY - height / 2;
+              const bottom = otherY + height / 2;
+
+              // Find the closest point on the rectangle to the explosion center
+              const closestX = Math.max(left, Math.min(myX, right));
+              const closestY = Math.max(top, Math.min(myY, bottom));
+
+              const distSquared = Math.pow(myX - closestX, 2) + Math.pow(myY - closestY, 2);
+              
+              if (distSquared <= (explosionRadius * explosionRadius)) {
+                // Calculate push vector from center of explosion to center of other element
+                let dx = otherX - myX;
+                let dy = otherY - myY;
+                
+                // If they are exactly on top of each other, give a random nudge
+                if (dx === 0 && dy === 0) {
+                  dx = (Math.random() - 0.5) * 10;
+                  dy = (Math.random() - 0.5) * 10;
+                }
+                
+                const length = Math.sqrt(dx * dx + dy * dy);
+                const nx = dx / length;
+                const ny = dy / length;
+                
+                // Base push amount: push it clear of the explosion radius
+                const desiredDistance = explosionRadius + Math.max(width, height) / 2 + 50;
+                let pushAmount = 0;
+                if (length < desiredDistance) {
+                  pushAmount = desiredDistance - length;
+                }
+                
+                // Add an extra pop outwards
+                pushAmount += 150;
+                
+                const newX = otherX + nx * pushAmount;
+                const newY = otherY + ny * pushAmount;
+
+                update(ref(db, `canvas_messages/${otherKey}`), { x: newX, y: newY }).catch(err => console.error("Error pushing message", err));
               }
             }
           });
@@ -450,6 +622,19 @@ function createMessageElement(key, data) {
 
 // Global zIndex counter for stacking
 let globalZIndex = 10;
+
+function addDeleteButton(el, key) {
+  if (el.querySelector('.delete-btn')) return;
+  const deleteBtn = document.createElement("button");
+  deleteBtn.classList.add("delete-btn");
+  deleteBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>`;
+  deleteBtn.addEventListener("click", () => {
+    if (confirm("Delete this message?")) {
+      remove(ref(db, `canvas_messages/${key}`)).catch(err => console.error(err));
+    }
+  });
+  el.appendChild(deleteBtn);
+}
 
 function makeDraggable(el, dbKey) {
   let isDragging = false;
@@ -510,6 +695,33 @@ function makeDraggable(el, dbKey) {
       uiContainer.style.left = `${newX}px`;
       uiContainer.style.top = `calc(${newY}px + 50px)`;
     }
+
+    const myWidth = el.offsetWidth || 150;
+    const myHeight = el.offsetHeight || 50;
+    const myLeft = newX - myWidth / 2;
+    const myRight = newX + myWidth / 2;
+    const myTop = newY - myHeight / 2;
+    const myBottom = newY + myHeight / 2;
+
+    for (const [otherKey, otherElement] of Object.entries(messageElements)) {
+      if (otherElement !== el && otherElement.dataset.sendAngle !== undefined) {
+        const otherX = parseFloat(otherElement.style.left) || 0;
+        const otherY = parseFloat(otherElement.style.top) || 0;
+        const width = otherElement.offsetWidth || 150;
+        const height = otherElement.offsetHeight || 50;
+        
+        const otherLeft = otherX - width / 2;
+        const otherRight = otherX + width / 2;
+        const otherTop = otherY - height / 2;
+        const otherBottom = otherY + height / 2;
+
+        if (!(myRight < otherLeft || myLeft > otherRight || myBottom < otherTop || myTop > otherBottom)) {
+           otherElement.classList.add('send-hover-ready');
+        } else {
+           otherElement.classList.remove('send-hover-ready');
+        }
+      }
+    }
   }
 
   function dragEnd(e) {
@@ -525,10 +737,70 @@ function makeDraggable(el, dbKey) {
     const finalX = parseFloat(el.style.left);
     const finalY = parseFloat(el.style.top);
 
-    update(ref(db, `canvas_messages/${dbKey}`), {
-      x: finalX,
-      y: finalY
-    }).catch(err => console.error(err));
+    let fired = false;
+    for (const [otherKey, otherElement] of Object.entries(messageElements)) {
+      if (otherElement.dataset.sendAngle !== undefined) {
+        otherElement.classList.remove('send-hover-ready');
+      }
+      if (otherElement !== el && otherElement.dataset.sendAngle !== undefined) {
+        const otherX = parseFloat(otherElement.style.left) || 0;
+        const otherY = parseFloat(otherElement.style.top) || 0;
+        const width = otherElement.offsetWidth || 150;
+        const height = otherElement.offsetHeight || 50;
+        
+        const otherLeft = otherX - width / 2;
+        const otherRight = otherX + width / 2;
+        const otherTop = otherY - height / 2;
+        const otherBottom = otherY + height / 2;
+
+        const myWidth = el.offsetWidth || 150;
+        const myHeight = el.offsetHeight || 50;
+        const myLeft = finalX - myWidth / 2;
+        const myRight = finalX + myWidth / 2;
+        const myTop = finalY - myHeight / 2;
+        const myBottom = finalY + myHeight / 2;
+
+        if (!(myRight < otherLeft || myLeft > otherRight || myBottom < otherTop || myTop > otherBottom)) {
+           // Dropped onto a send bubble!
+           const angle = parseFloat(otherElement.dataset.sendAngle) || 0;
+           startBulletLoop(dbKey, angle, otherKey);
+           fired = true;
+           
+           // Give the send bubble a little shake to indicate it fired
+           otherElement.classList.remove('send-hover-ready');
+           otherElement.classList.add('shake-animation');
+           setTimeout(() => {
+             if (otherElement) otherElement.classList.remove('shake-animation');
+           }, 500);
+           
+           let inSmoke = false;
+           for (const [sKey, sEl] of Object.entries(messageElements)) {
+             if (sEl.querySelector('.smoke-cloud')) {
+               const sx = parseFloat(sEl.style.left) || 0;
+               const sy = parseFloat(sEl.style.top) || 0;
+               const dx = parseFloat(otherElement.style.left) - sx;
+               const dy = parseFloat(otherElement.style.top) - sy;
+               if (Math.hypot(dx, dy) < 200) { inSmoke = true; break; }
+             }
+           }
+           if (!inSmoke) {
+             push(ref(db, 'canvas_broadcasts'), {
+               text: `${userName} just fired off a message at ${angle} degrees!`,
+               timestamp: Date.now()
+             }).catch(() => {});
+           }
+           
+           break;
+        }
+      }
+    }
+
+    if (!fired) {
+      update(ref(db, `canvas_messages/${dbKey}`), {
+        x: finalX,
+        y: finalY
+      }).catch(err => console.error(err));
+    }
   }
 }
 
@@ -603,8 +875,12 @@ function createAshes(x, y) {
   }
 }
 
-function startBulletLoop(key, dir = "right") {
-  const speed = 15; // pixels per frame
+function startBulletLoop(key, angle = 0, launcherKey = null) {
+  let vx = Math.cos(angle * Math.PI / 180) * 25; // constant velocity
+  let vy = -Math.sin(angle * Math.PI / 180) * 25;
+  
+  let elapsed = 0;
+  const maxLifetime = 5000; // 5 seconds of flight to prevent infinite Firebase writes
 
   const interval = setInterval(() => {
     const el = messageElements[key];
@@ -613,46 +889,62 @@ function startBulletLoop(key, dir = "right") {
       return;
     }
 
+    // Time-based cleanup instead of friction-based
+    elapsed += 30;
+    if (elapsed >= maxLifetime) {
+      clearInterval(interval);
+      setTimeout(() => {
+        remove(ref(db, `canvas_messages/${key}`)).catch(() => {});
+      }, 100);
+      return;
+    }
+
     const currentX = parseFloat(el.style.left) || 0;
     const currentY = parseFloat(el.style.top) || 0;
     
-    let newX = currentX;
-    let newY = currentY;
+    let newX = currentX + vx;
+    let newY = currentY + vy;
     
-    if (dir === "right") newX += speed;
-    else if (dir === "left") newX -= speed;
-    else if (dir === "up") newY -= speed;
-    else if (dir === "down") newY += speed;
-    
-    // Locally update position for smooth animation
-    el.style.left = `${newX}px`;
-    el.style.top = `${newY}px`;
+    // Check collisions to stop the bullet if it hits another message
+    const myWidth = (el.offsetWidth || 150) * 0.8;
+    const myHeight = (el.offsetHeight || 50) * 0.8;
+    const myLeft = newX - myWidth / 2;
+    const myRight = newX + myWidth / 2;
+    const myTop = newY - myHeight / 2;
+    const myBottom = newY + myHeight / 2;
 
-    // Sync to Firebase occasionally so others see it moving
-    update(ref(db, `canvas_messages/${key}`), { x: newX, y: newY }).catch(() => {});
-
-    // Collision Detection
-    const rect1 = el.getBoundingClientRect();
-    const myUid = el.dataset.uid;
-
+    let hit = false;
     for (const [otherKey, otherElement] of Object.entries(messageElements)) {
-      if (otherElement !== el) {
-        const otherUid = otherElement.dataset.uid;
-        if (otherUid !== myUid) {
-          const rect2 = otherElement.getBoundingClientRect();
-          if (!(rect1.right < rect2.left || 
-                rect1.left > rect2.right || 
-                rect1.bottom < rect2.top || 
-                rect1.top > rect2.bottom)) {
-            // Collision!
-            clearInterval(interval);
-            remove(ref(db, `canvas_messages/${otherKey}`)).catch(console.error);
-            remove(ref(db, `canvas_messages/${key}`)).catch(console.error);
+      if (otherElement !== el && otherKey !== launcherKey) {
+        const otherX = parseFloat(otherElement.style.left) || 0;
+        const otherY = parseFloat(otherElement.style.top) || 0;
+        
+        const width = (otherElement.offsetWidth || 150) * 0.8;
+        const height = (otherElement.offsetHeight || 50) * 0.8;
+        
+        const otherLeft = otherX - width / 2;
+        const otherRight = otherX + width / 2;
+        const otherTop = otherY - height / 2;
+        const otherBottom = otherY + height / 2;
+
+        if (!(myRight < otherLeft || myLeft > otherRight || myBottom < otherTop || myTop > otherBottom)) {
+            hit = true;
             break;
-          }
         }
       }
     }
+
+    if (hit) {
+      clearInterval(interval);
+      update(ref(db, `canvas_messages/${key}`), { x: currentX, y: currentY }).catch(() => {});
+      return;
+    }
+
+    // Apply final position
+    el.style.left = `${newX}px`;
+    el.style.top = `${newY}px`;
+
+    update(ref(db, `canvas_messages/${key}`), { x: newX, y: newY }).catch(() => {});
   }, 30);
 }
 
@@ -660,7 +952,7 @@ function updateSmokeAccess(el, key, data) {
   const lowerText = (data.text || "").toLowerCase();
   let firstTrigger = null;
   let firstTriggerIndex = Infinity;
-  const triggerKeywords = ["cast", "boom", "smoke"];
+  const triggerKeywords = ["send", "boom", "smoke"];
   for (const keyword of triggerKeywords) {
     const idx = lowerText.indexOf(keyword);
     if (idx !== -1 && idx < firstTriggerIndex) {
@@ -747,3 +1039,330 @@ function updateSmokeAccess(el, key, data) {
     }
   }
 }
+
+function startPhysicsLoop(key) {
+  let vx = (Math.random() - 0.5) * 15;
+  let vy = -15; 
+  const gravity = 1.2;
+  const bounce = 0.5;
+  const friction = 0.98;
+
+  const interval = setInterval(() => {
+    const el = messageElements[key];
+    if (!el || !document.body.contains(el)) {
+      clearInterval(interval);
+      return;
+    }
+
+    vy += gravity;
+    vx *= friction;
+    vy *= friction;
+
+    const currentX = parseFloat(el.style.left) || 0;
+    const currentY = parseFloat(el.style.top) || 0;
+    
+    let newX = currentX + vx;
+    let newY = currentY + vy;
+    
+    const myWidth = el.offsetWidth || 150;
+    const myHeight = el.offsetHeight || 50;
+
+    let hitSomething = false;
+
+    for (const [otherKey, otherElement] of Object.entries(messageElements)) {
+      if (otherElement !== el) {
+        if (otherElement.dataset.isBullet) continue;
+
+        const otherX = parseFloat(otherElement.style.left) || 0;
+        const otherY = parseFloat(otherElement.style.top) || 0;
+        const width = otherElement.offsetWidth || 150;
+        const height = otherElement.offsetHeight || 50;
+        
+        const otherLeft = otherX - width / 2;
+        const otherRight = otherX + width / 2;
+        const otherTop = otherY - height / 2;
+        const otherBottom = otherY + height / 2;
+        
+        const myLeft = newX - myWidth / 2;
+        const myRight = newX + myWidth / 2;
+        const myTop = newY - myHeight / 2;
+        const myBottom = newY + myHeight / 2;
+
+        if (!(myRight < otherLeft || 
+              myLeft > otherRight || 
+              myBottom < otherTop || 
+              myTop > otherBottom)) {
+          
+          hitSomething = true;
+          const prevRight = currentX + myWidth / 2;
+          const prevLeft = currentX - myWidth / 2;
+          const prevBottom = currentY + myHeight / 2;
+          const prevTop = currentY - myHeight / 2;
+          
+          let hitX = false;
+          let hitY = false;
+
+          if (prevRight <= otherLeft || prevLeft >= otherRight) hitX = true;
+          if (prevBottom <= otherTop || prevTop >= otherBottom) hitY = true;
+          
+          if (!hitX && !hitY) {
+            const dx = newX - otherX;
+            const dy = newY - otherY;
+            if (Math.abs(dx) / width > Math.abs(dy) / height) hitX = true;
+            else hitY = true;
+          }
+
+          if (hitX) {
+            vx = -vx * bounce; 
+            if (newX > otherX) newX = otherRight + myWidth / 2 + 1;
+            else newX = otherLeft - myWidth / 2 - 1;
+          }
+          if (hitY) {
+            vy = -vy * bounce; 
+            if (newY > otherY) newY = otherBottom + myHeight / 2 + 1;
+            else newY = otherTop - myHeight / 2 - 1;
+            
+            // Extra friction on the floor
+            if (newY < otherY) {
+              vx *= 0.8;
+            }
+          }
+        }
+      }
+    }
+
+    if (newY > 20000) {
+      clearInterval(interval);
+      remove(ref(db, `canvas_messages/${key}`)).catch(() => {});
+      return;
+    }
+
+    // Sleep if resting
+    if (hitSomething && Math.abs(vx) < 1.0 && Math.abs(vy) < 2.0) {
+      clearInterval(interval);
+      el.classList.remove('physics-active');
+    }
+
+    el.style.left = `${newX}px`;
+    el.style.top = `${newY}px`;
+
+    if (Math.abs(currentX - newX) > 0.5 || Math.abs(currentY - newY) > 0.5) {
+       update(ref(db, `canvas_messages/${key}`), { x: newX, y: newY }).catch(() => {});
+    }
+
+  }, 30);
+}
+
+// Minecraft-style Broadcasting System
+function appendToHistory(text, timestamp, isSystem = false) {
+  globalHistory.push({ text, timestamp, isSystem });
+  globalHistory.sort((a, b) => a.timestamp - b.timestamp);
+  
+  const content = document.getElementById('history-content');
+  if (!content) return;
+  content.innerHTML = '';
+  globalHistory.forEach(item => {
+    const d = new Date(item.timestamp);
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    content.innerHTML += `
+      <div class="history-item ${item.isSystem ? 'system' : ''}">
+        <div class="history-time">${timeStr}</div>
+        <div>${item.text}</div>
+      </div>
+    `;
+  });
+  content.scrollTop = content.scrollHeight;
+}
+
+function computeBroadcastText(messageKey, data) {
+  let inSmoke = false;
+  for (const [key, msgEl] of Object.entries(messageElements)) {
+    if (key === messageKey) continue; // Don't check against itself
+    if (msgEl.querySelector('.smoke-cloud')) {
+      const sx = parseFloat(msgEl.style.left) || 0;
+      const sy = parseFloat(msgEl.style.top) || 0;
+      const dx = data.x - sx;
+      const dy = data.y - sy;
+      if (Math.hypot(dx, dy) < 200) {
+        inSmoke = true;
+        break;
+      }
+    }
+  }
+
+  if (inSmoke) return null;
+
+  const lowerText = (data.text || "").toLowerCase();
+  let firstTrigger = null;
+  let firstTriggerIndex = Infinity;
+  const triggerKeywords = ["send", "boom", "smoke", "physics"];
+  for (const keyword of triggerKeywords) {
+    const idx = lowerText.indexOf(keyword);
+    if (idx !== -1 && idx < firstTriggerIndex) {
+      firstTriggerIndex = idx;
+      firstTrigger = keyword;
+    }
+  }
+
+  const name = data.sender || "Anonymous";
+  let broadcastText = "";
+
+  if (firstTrigger === "send") {
+    const angleMatch = data.text.match(/(-?\d+(?:\.\d+)?)\s*degrees?/i);
+    const angle = angleMatch ? angleMatch[1] : 0;
+    broadcastText = `${name} casted a send spell at ${angle} degrees!`;
+  } else if (firstTrigger === "boom") {
+    broadcastText = `${name} caused an explosion!`;
+  } else if (firstTrigger === "smoke") {
+    broadcastText = `${name} deployed a smoke screen!`;
+  } else if (firstTrigger === "physics") {
+    broadcastText = `${name} enabled physics!`;
+  } else {
+    let msg = data.text;
+    if (msg.length > 30) msg = msg.substring(0, 30) + "...";
+    broadcastText = `${name} just typed: "${msg}" out in the open!`;
+  }
+
+  return broadcastText;
+}
+
+function addBroadcastElement(text) {
+  let container = document.getElementById("broadcast-container");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "broadcast-container";
+    container.className = "broadcast-container";
+    document.body.appendChild(container);
+  }
+  
+  const el = document.createElement("div");
+  el.className = "broadcast-message";
+  el.innerText = text;
+  container.appendChild(el);
+
+  while (container.children.length > 6) {
+    container.removeChild(container.firstChild);
+  }
+
+  setTimeout(() => {
+    el.style.opacity = '0';
+    setTimeout(() => {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }, 1000);
+  }, 6000);
+}
+
+// History UI Events
+const historyBtn = document.getElementById("history-btn");
+const historyPanel = document.getElementById("history-panel");
+const historyCloseBtn = document.getElementById("history-close-btn");
+
+if (historyBtn) {
+  historyBtn.addEventListener("click", () => historyPanel.classList.add("open"));
+  historyCloseBtn.addEventListener("click", () => historyPanel.classList.remove("open"));
+}
+
+// --- Interactive Fluid Grid Background ---
+const canvasBg = document.getElementById('flow-bg');
+const ctx = canvasBg.getContext('2d');
+
+function resizeCanvas() {
+  canvasBg.width = window.innerWidth;
+  canvasBg.height = window.innerHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+const bubbleStates = new Map();
+
+function drawGrid() {
+  ctx.clearRect(0, 0, canvasBg.width, canvasBg.height);
+  
+  const gridSize = 20 * camera.z;
+  let offsetX = camera.x % gridSize;
+  let offsetY = camera.y % gridSize;
+  
+  if (offsetX < 0) offsetX += gridSize;
+  if (offsetY < 0) offsetY += gridSize;
+
+  // Cleanup bubbleStates
+  for (const el of bubbleStates.keys()) {
+    if (!document.body.contains(el)) {
+      bubbleStates.delete(el);
+    }
+  }
+
+  const forces = [];
+  const bubbles = document.querySelectorAll('.canvas-message');
+  
+  bubbles.forEach(el => {
+    const rect = el.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    
+    let state = bubbleStates.get(el);
+    if (!state) {
+      state = { x: cx, y: cy, vx: 0, vy: 0 };
+      bubbleStates.set(el, state);
+    }
+    
+    const vx = cx - state.x;
+    const vy = cy - state.y;
+    state.vx = state.vx * 0.8 + vx * 0.2;
+    state.vy = state.vy * 0.8 + vy * 0.2;
+    state.x = cx;
+    state.y = cy;
+    
+    const speed = Math.sqrt(state.vx*state.vx + state.vy*state.vy);
+    
+    let strength = Math.min(speed * 1.5, 30) * camera.z;
+    if (el.dataset.isDragging === "true" && strength < 15 * camera.z) {
+      strength = 15 * camera.z;
+    }
+    
+    if (strength > 1) {
+      forces.push({
+        x: cx,
+        y: cy,
+        vx: state.vx,
+        vy: state.vy,
+        radius: 180 * camera.z,
+        strength: strength
+      });
+    }
+  });
+
+  ctx.fillStyle = '#d5d5d5';
+
+  for (let x = offsetX - gridSize; x < canvasBg.width + gridSize; x += gridSize) {
+    for (let y = offsetY - gridSize; y < canvasBg.height + gridSize; y += gridSize) {
+      let drawX = x;
+      let drawY = y;
+      
+      for (const f of forces) {
+        const dx = drawX - f.x;
+        const dy = drawY - f.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        if (dist < f.radius && dist > 0) {
+          const force = Math.pow((f.radius - dist) / f.radius, 2); 
+          
+          const radialPush = f.strength * 0.3;
+          const velocityDrag = 1.2;
+          
+          drawX += (dx / dist) * force * radialPush;
+          drawY += (dy / dist) * force * radialPush;
+          
+          drawX += f.vx * force * velocityDrag;
+          drawY += f.vy * force * velocityDrag;
+        }
+      }
+      
+      ctx.beginPath();
+      ctx.arc(drawX, drawY, 1.5 * camera.z, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  
+  requestAnimationFrame(drawGrid);
+}
+requestAnimationFrame(drawGrid);
